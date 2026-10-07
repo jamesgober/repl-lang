@@ -3,7 +3,7 @@
 # =============================================================================
 [package]
 name    = "repl-lang"
-version = "0.1.0"
+version = "1.0.0"
 
 # Minimum Supported Rust Version (MSRV)
 rust-version = "1.85"
@@ -16,13 +16,13 @@ license = "Apache-2.0 OR MIT"
 readme = "README.md"
 
 # Description
-description = "Read-eval-print loop scaffolding with session state."
+description = "Read-eval-print loop scaffolding: line editing, session state, and incremental input feed."
 
 # Keywords (5 max)
-keywords = [language,repl,interactive,interpreter]
+keywords = ["repl", "interactive", "interpreter", "language", "line-editing"]
 
 # Categories
-categories = [development-tools,command-line-interface]
+categories = ["command-line-interface", "development-tools", "compilers"]
 
 # Links
 homepage      = "https://github.com/jamesgober/repl-lang"
@@ -45,25 +45,34 @@ path = "src/lib.rs"
 # #################################
 [features]
 default = ["std"]
-std = []
-# Serialization support.
-serde = ["dep:serde"]
+# The standard library. Without it the crate is `no_std` and needs only `alloc`.
+std = ["lexer-lang/std", "diag-lang/std", "source-lang/std", "unicode-lang/std"]
 
 
 # DEPENDENCIES
 # #################################
 [dependencies]
-serde = { version = "1", optional = true, default-features = false, features = ["derive", "alloc"] }
+# `Input::cursor` hands the pipeline a scanner already positioned at the entry's
+# global base, so every token span it emits is valid in the session's source map.
+lexer-lang = { version = "1", default-features = false }
+# `Input::is_incomplete` reads parser diagnostics to tell "ran out of input" from
+# "wrong input". Default features (ANSI colour) are left to the application.
+diag-lang = { version = "1", default-features = false }
+# Committed entries live in a `SourceMap`, one source per entry, so a diagnostic
+# from any entry renders against the text the user actually typed.
+source-lang = { version = "1", default-features = false }
+# Display widths (cursor column, zero-width combining marks) and identifier
+# classes (word motion) for the line editor.
+unicode-lang = { version = "1", default-features = false }
 
 
 # DEV DEPENDENCIES
 # #################################
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
-proptest  = "1"
-
-[target.'cfg(loom)'.dev-dependencies]
-loom = "0.7"
+criterion   = { version = "0.5", features = ["html_reports"] }
+proptest    = "1"
+# The examples and integration tests drive a real parser through the session.
+parser-lang = "1"
 
 
 # BENCHMARKS
