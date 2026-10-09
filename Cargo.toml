@@ -3,7 +3,7 @@
 # =============================================================================
 [package]
 name    = "repl-lang"
-version = "1.0.0"
+version = "1.1.0"
 
 # Minimum Supported Rust Version (MSRV)
 rust-version = "1.85"
@@ -73,6 +73,11 @@ criterion   = { version = "0.5", features = ["html_reports"] }
 proptest    = "1"
 # The examples and integration tests drive a real parser through the session.
 parser-lang = "1"
+# A parser that reports diagnostics relative to the entry text rather than the
+# session's global positions; the tests check `Input::is_incomplete` with it
+# across several entries (ISSUES M72). 1.0.1 is the first release without a
+# `deny(warnings)` that breaks on newer toolchains.
+lang-forge  = "1.0.1"
 
 
 # BENCHMARKS

@@ -21,6 +21,45 @@
 
 ---
 
+## [1.1.0] - 2026-10-08
+
+Fixes ISSUES M72 with an explicit, additive method, and the patch-level part
+of M73. `Input::is_incomplete` is unchanged.
+
+### Added
+
+- `Input::is_incomplete_relative`: the `is_incomplete` rule for parsers whose
+  error spans are relative to the entry's text (byte `0` is the entry's first
+  byte), such as a lang-forge language parsing `Input::text` on its own.
+  `is_incomplete` keeps its exact 1.0 meaning for global spans.
+
+### Changed
+
+- `Editor::add_history` keeps newlines and tabs, so a saved multi-line entry
+  recalls as it was entered; `"\r\n"` and a lone `'\r'` become `'\n'`. Every
+  other control character, escape included, is still removed.
+- In a recalled multi-line entry, a newline is a display unit of its own (the
+  cursor stops on both sides of it; one backspace removes it), a tab is a unit
+  one column wide, and `Editor::column` counts from the start of the cursor's
+  own line. Lines that hold no newline or tab, which is every line 1.0.0 could
+  produce, behave exactly as before.
+- `#![deny(warnings)]` is no longer set in the library (ISSUES F03): a lint
+  added by a newer toolchain cannot break a downstream build. CI still denies
+  warnings.
+
+### Fixed
+
+- A parser that reports positions relative to the entry text (lang-forge, for
+  one) had no correct completeness check: `is_incomplete` compares errors
+  with the entry's global end, so from the second entry on every unfinished
+  entry was reported as a syntax error. `is_incomplete_relative` is the check
+  for such parsers.
+- `Editor::add_history` removed newlines along with other control characters,
+  so a saved multi-line entry came back with its lines joined and tokens on
+  either side of a line break merged (`"a\nb"` became `"ab"`).
+
+---
+
 ## [1.0.0] - 2026-07-08
 
 API freeze. The public surface introduced in 0.2.0 is now stable and frozen
@@ -133,7 +172,8 @@ Initial scaffold and repository bootstrap. No domain logic yet &mdash; this rele
 - `.github/workflows/ci.yml` CI matrix; `deny.toml`, `clippy.toml`, `rustfmt.toml`.
 - `dev/DIRECTIVES.md` and `dev/ROADMAP.md` (committed engineering standards + plan).
 
-[Unreleased]: https://github.com/jamesgober/repl-lang/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/jamesgober/repl-lang/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/jamesgober/repl-lang/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/jamesgober/repl-lang/compare/v0.2.0...v1.0.0
 [0.2.0]: https://github.com/jamesgober/repl-lang/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jamesgober/repl-lang/releases/tag/v0.1.0

@@ -38,6 +38,7 @@
   - [`Input::number`](#inputnumber)
   - [`Input::cursor`](#inputcursor)
   - [`Input::is_incomplete`](#inputis_incomplete)
+  - [`Input::is_incomplete_relative`](#inputis_incomplete_relative)
 - [`Status`](#status)
 - [`Feed`](#feed)
 - [`Entry`](#entry)
@@ -163,6 +164,17 @@ checks exactly that — at least one error, and every error at or after the last
 non-whitespace byte. Errors anywhere else mean the input is wrong, and typing
 more will not help, so the entry completes and the errors are shown.
 
+The check comes in two forms, one per way a parser can report positions:
+
+| The parser… | Its spans are | Use |
+|---|---|---|
+| lexes with [`Input::cursor`](#inputcursor), or adds [`Input::base`](#inputbase) itself | global positions in the session's source map | [`Input::is_incomplete`](#inputis_incomplete) |
+| parses [`Input::text`](#inputtext) as a standalone string (a [lang-forge](https://crates.io/crates/lang-forge) language, for one) | relative to the entry's text, from `0` | [`Input::is_incomplete_relative`](#inputis_incomplete_relative) |
+
+The rule is the same; only the origin differs. In the first entry the two
+agree, because its base is `0`. From the second entry on, only the matching
+method is right.
+
 Return `Status::Complete` for wrong input as well as right input. Only input
 that stopped too soon is `Incomplete`.
 
@@ -197,6 +209,12 @@ A **word** is a run of units whose base character is an identifier character
 [`Editor::column`](#editorcolumn) measures the text before the cursor in
 terminal columns: wide characters such as CJK ideographs and most emoji count
 two, combining marks count none.
+
+Typing and pasting never put a control character into the line. A recalled
+[history](#editoradd_history) entry can hold the two that make up a multi-line
+entry: a newline is a unit of its own (the cursor stops on both sides of it,
+one backspace removes it) and ends the line `column` counts on; a tab is a unit
+one column wide.
 
 ### History and the draft
 
@@ -831,7 +849,7 @@ the signal to ask for another line.
 
 | Parameter | Meaning |
 |---|---|
-| `errors` | The diagnostics the pipeline's parser produced for this input, with global spans. Only `Severity::Error` entries are considered; warnings, notes, and help are ignored. |
+| `errors` | The diagnostics the pipeline's parser produced for this input, with global spans. Only `Severity::Error` entries are considered; warnings, notes, and help are ignored. For spans relative to the entry's text, use [`is_incomplete_relative`](#inputis_incomplete_relative). |
 
 **Returns** `true` when there is at least one error and every error's primary
 span starts at or after the end of the meaningful text (the last
@@ -882,6 +900,49 @@ fn pipeline(input: repl_lang::Input<'_>, errors: &[Diagnostic]) -> Status<()> {
 let mut session = Session::new();
 assert_eq!(session.feed("print \"hello", |input| pipeline(input, &[]))?, Feed::Incomplete);
 assert!(matches!(session.feed("world\"", |input| pipeline(input, &[]))?, Feed::Complete { .. }));
+# Ok::<(), repl_lang::SessionError>(())
+```
+
+### `Input::is_incomplete_relative`
+
+```rust,ignore
+pub fn is_incomplete_relative(&self, errors: &[Diagnostic]) -> bool
+```
+
+*Since 1.1.0.* [`is_incomplete`](#inputis_incomplete) for a parser whose spans
+are relative to [`text`](#inputtext): byte `0` is the entry's first byte,
+whatever its [`base`](#inputbase). Use it when the pipeline parses
+`input.text()` on its own rather than through [`cursor`](#inputcursor), as a
+language forged with lang-forge does (`Language::parse(input.text())`).
+
+| Parameter | Meaning |
+|---|---|
+| `errors` | The diagnostics the pipeline's parser produced for this input, with spans relative to the text. Only `Severity::Error` entries are considered. |
+
+**Returns** `true` when there is at least one error and every error's primary
+span starts at or after the end of the meaningful text (the last
+non-whitespace byte), counted from the start of the text. It is the same rule
+as `is_incomplete`, so the two methods agree exactly when every span differs
+by `base`. Passing relative spans to `is_incomplete` instead judges every entry
+after the first complete, because their end-of-input errors fall before the
+entry's global end.
+
+```rust
+use diag_lang::{Diagnostic, Label, Severity};
+use repl_lang::{Session, Span, Status};
+
+let at = |pos: u32| Diagnostic::new(Severity::Error, "expected expression", Label::new(Span::empty(pos), ""));
+
+let mut session = Session::new();
+session.feed("let a = 1;", |_| Status::Complete(()))?; // occupies 0..11
+session.feed("(2 *", |input| {
+    // A parser of `input.text()` alone reports the end of `(2 *` at 4.
+    assert!(input.is_incomplete_relative(&[at(4)]));
+    assert!(!input.is_incomplete_relative(&[at(1)])); // mid-text: wrong, not unfinished
+    // The same place in global positions, for `is_incomplete`.
+    assert!(input.is_incomplete(&[at(11 + 4)]));
+    Status::Complete(())
+})?;
 # Ok::<(), repl_lang::SessionError>(())
 ```
 
@@ -1107,9 +1168,12 @@ change; on Enter it calls [`submit`](#editorsubmit). The editor holds no file
 descriptors and draws nothing, so it behaves identically on every platform.
 
 **Invariants.** The cursor is a byte offset on a `char` boundary, never inside
-a [display unit](#display-units-and-words). The line never contains control
-characters: [`Edit::Insert`](#edit), [`insert`](#editorinsert), and
-[`add_history`](#editoradd_history) all refuse them.
+a [display unit](#display-units-and-words). Typing and pasting never put a
+control character into the line: [`Edit::Insert`](#edit) and
+[`insert`](#editorinsert) refuse them all. The only control characters the line
+can hold are the newlines and tabs of a recalled multi-line entry, which
+[`add_history`](#editoradd_history) keeps; it removes every other one, `ESC`
+included.
 
 **Memory.** The line, the kill buffer, and every history slot are reused. Once
 the history is full, a submit recycles the oldest slot's buffer, so a long
@@ -1257,6 +1321,10 @@ display width of the text before the cursor. Wide characters count two columns,
 combining marks none. After drawing the prompt and the line, move the terminal
 cursor to `prompt_width + column()`. Computed per call in time linear in the
 text before the cursor, with a fast path for ASCII.
+
+In a recalled multi-line entry, the count starts after the last newline before
+the cursor, so it is the column on the cursor's own line, and a tab counts one
+column (draw it as one cell for the cursor to line up).
 
 ```rust
 use repl_lang::{Edit, Editor};
@@ -1446,7 +1514,7 @@ the line being edited. Use it to restore history saved by an earlier session.
 
 | Parameter | Meaning |
 |---|---|
-| `line` | The text to record. Control characters are removed first; the result is skipped if blank or equal to the newest entry; the oldest entry is dropped once the history is full. |
+| `line` | The text to record. Control characters are removed first, except newlines and tabs, which a multi-line entry needs (`"\r\n"` and a lone `'\r'` become `'\n'`); the result is skipped if blank or equal to the newest entry; the oldest entry is dropped once the history is full. |
 
 ```rust
 use repl_lang::{Edit, Editor};
@@ -1464,10 +1532,15 @@ assert_eq!(editor.line(), "x * 2");
 use repl_lang::Editor;
 
 let mut editor = Editor::new();
-editor.add_history("ls\t-la");  // the tab is removed
-editor.add_history("\u{7}");    // nothing left: skipped
-assert!(editor.history().eq(["ls-la"]));
+editor.add_history("let x =\r\n\t42");  // a multi-line entry keeps its lines
+editor.add_history("\u{1b}[1mbold");    // ESC is removed
+editor.add_history("\u{7}");            // nothing left: skipped
+assert!(editor.history().eq(["let x =\n\t42", "[1mbold"]));
 ```
+
+Before 1.1.0, newlines and tabs were removed too, so a saved multi-line entry
+came back with its lines run together (`"a\nb"` as `"ab"`, one token instead
+of two).
 
 ### `Editor::history`
 
@@ -1832,7 +1905,7 @@ second the entry it was continuing.
 
 ## Stability
 
-repl-lang `1.0.0` freezes the public API. It follows
+repl-lang `1.0.0` froze the public API; `1.1.0` added to it. It follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html): nothing below
 changes in a breaking way before `2.0`. Additions — new methods, new `Edit`
 commands, new `SessionError` variants, new optional features — arrive in minor
@@ -1843,7 +1916,7 @@ releases.
 | Item | Frozen as |
 |---|---|
 | [`Session`](#session) | `DEFAULT_LIMIT`, `new`, `with_limit`, `feed`, `cancel`, `is_pending`, `pending`, `len`, `is_empty`, `entry`, `sources`, `limit`; `Clone`, `Debug`, `Default`, `Send`, `Sync`. |
-| [`Input`](#input) | `text`, `base`, `span`, `number`, `cursor`, `is_incomplete`; `Clone`, `Copy`, `Debug`, `PartialEq`, `Eq`. |
+| [`Input`](#input) | `text`, `base`, `span`, `number`, `cursor`, `is_incomplete`, `is_incomplete_relative` (since 1.1.0); `Clone`, `Copy`, `Debug`, `PartialEq`, `Eq`. |
 | [`Status`](#status) | Exactly `Complete(T)` and `Incomplete` — an exhaustive enum. |
 | [`Feed`](#feed) | Exactly `Complete { entry, value }`, `Incomplete`, and `Empty` — an exhaustive enum. |
 | [`Entry`](#entry) | `number`, `id`, `span`; `Clone`, `Copy`, `Debug`, `PartialEq`, `Eq`, `Hash`. |
@@ -1869,14 +1942,19 @@ or there was nothing to evaluate. A new pipeline verdict would need a new
   pipeline.
 - **Completeness.** [`Input::is_incomplete`](#inputis_incomplete) is `true`
   exactly when there is at least one `Severity::Error` diagnostic and every one
-  starts at or after the last non-whitespace byte of the input.
+  starts at or after the last non-whitespace byte of the input, in global
+  positions. [`Input::is_incomplete_relative`](#inputis_incomplete_relative)
+  applies the same rule to positions relative to the input's text.
 - **Limits.** `Session::DEFAULT_LIMIT` is 1 MiB and counts line terminators;
   `Editor::DEFAULT_HISTORY` is 1000.
 - **Editing.** Display units (a visible character plus following zero-width
-  characters), words (`XID_Continue` runs), control-character refusal on every
-  path into the line, the history recording rules (no blanks, no immediate
-  repeats, oldest dropped at capacity), and the draft rules (restored by
-  `HistoryNext`, dropped by `submit` and `clear`).
+  characters; a newline is a unit of its own), words (`XID_Continue` runs),
+  control-character refusal when typing and pasting, history entries keeping
+  only newlines and tabs among control characters (since 1.1.0; 1.0.0 removed
+  them too, which merged the lines of a multi-line entry), the history
+  recording rules (no blanks, no immediate repeats, oldest dropped at
+  capacity), and the draft rules (restored by `HistoryNext`, dropped by
+  `submit` and `clear`).
 - **MSRV.** Rust 1.85. A rise is a minor-version change, never a patch.
 
 ### Not part of the contract

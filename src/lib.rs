@@ -18,7 +18,9 @@
 //!   a [`lexer_lang::Cursor`] already placed there, and
 //!   [`is_incomplete`](Input::is_incomplete) — the "errors only at the end of
 //!   input mean *keep typing*" test that turns any error-reporting parser into
-//!   a continuation-line detector.
+//!   a continuation-line detector — with
+//!   [`is_incomplete_relative`](Input::is_incomplete_relative) for parsers
+//!   that report positions from the start of the entry's text.
 //! - [`Editor`] is a terminal-agnostic line editor: cursor motion by visible
 //!   character and by word, kill and yank, and a bounded history, driven by
 //!   [`Edit`] commands the host maps from its own key events.
@@ -93,7 +95,6 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![forbid(unsafe_code)]
 #![deny(
-    warnings,
     missing_docs,
     unsafe_op_in_unsafe_fn,
     unused_must_use,

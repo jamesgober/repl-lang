@@ -199,7 +199,11 @@ impl Editor {
     /// ```
     #[must_use]
     pub fn column(&self) -> usize {
-        text_width(&self.line[..self.cursor])
+        let before = &self.line[..self.cursor];
+        // A recalled multi-line entry: count from the start of the cursor's
+        // own line.
+        let start = before.rfind('\n').map_or(0, |at| at + 1);
+        text_width(&before[start..])
     }
 
     /// Applies one editing command and reports whether the line or the cursor
@@ -368,9 +372,15 @@ impl Editor {
     /// Use it to restore a history saved from an earlier session. The same
     /// rules as [`submit`](Editor::submit) apply: blank lines and repeats of
     /// the newest entry are skipped, and the oldest entry is dropped once the
-    /// history is full. Control characters are removed first, exactly as
-    /// [`insert`](Editor::insert) removes them, so a recalled entry can never
-    /// put into the line something that could not have been typed there.
+    /// history is full.
+    ///
+    /// Control characters are removed first, except the two a multi-line entry
+    /// is made of: newlines and tabs are kept, so an entry such as
+    /// `"let x =\n\t42"` comes back as it was entered instead of with its lines
+    /// run together. A `"\r\n"` or a lone `'\r'` is kept as one `'\n'`.
+    /// Everything else — escape (`ESC`), the other C0 and C1 controls, and
+    /// `DEL` — is removed, so a recalled entry can never put a terminal
+    /// control sequence into the line.
     ///
     /// # Examples
     ///
@@ -384,10 +394,14 @@ impl Editor {
     /// }
     /// assert!(editor.apply(Edit::HistoryPrev));
     /// assert_eq!(editor.line(), "x * 2");
+    ///
+    /// // A multi-line entry keeps its lines; escape sequences lose their `ESC`.
+    /// editor.add_history("fn f() {\r\n\treturn 1\r\n}\u{1b}[0m");
+    /// assert_eq!(editor.history().next_back(), Some("fn f() {\n\treturn 1\n}[0m"));
     /// ```
     pub fn add_history(&mut self, line: &str) {
-        if line.contains(char::is_control) {
-            let clean: String = line.chars().filter(|c| !c.is_control()).collect();
+        if line.contains(|c: char| c.is_control() && c != '\n' && c != '\t') {
+            let clean = recallable(line);
             record(&mut self.history, self.capacity, &clean, &mut self.browsing);
         } else {
             record(&mut self.history, self.capacity, line, &mut self.browsing);
@@ -532,6 +546,23 @@ impl Editor {
         self.browsing = None;
         self.draft.clear();
     }
+}
+
+/// `line` as a history entry may hold it: newlines and tabs kept, `"\r\n"` and
+/// a lone `'\r'` turned into `'\n'`, and every other control character removed.
+fn recallable(line: &str) -> String {
+    let mut clean = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\r' if chars.peek() == Some(&'\n') => {}
+            '\r' | '\n' => clean.push('\n'),
+            '\t' => clean.push('\t'),
+            c if c.is_control() => {}
+            c => clean.push(c),
+        }
+    }
+    clean
 }
 
 /// Appends `line` to `history` under the editor's recording rules, recycling
@@ -717,13 +748,49 @@ mod tests {
     }
 
     #[test]
-    fn test_add_history_strips_control_characters() {
+    fn test_add_history_strips_control_characters_but_keeps_lines() {
         let mut editor = Editor::new();
-        editor.add_history("a\tb\u{1b}[0m");
-        editor.add_history("\n\t"); // nothing typable left: blank, skipped
-        assert!(editor.history().eq(["ab[0m"]));
+        editor.add_history("a\tb\u{1b}[0m\u{7f}\u{9b}");
+        editor.add_history("\n\t"); // only whitespace: blank, skipped
+        editor.add_history("one\r\ntwo\rthree\n");
+        assert!(editor.history().eq(["a\tb[0m", "one\ntwo\nthree\n"]));
         assert!(editor.apply(Edit::HistoryPrev));
-        assert!(!editor.line().contains(char::is_control));
+        assert_eq!(editor.line(), "one\ntwo\nthree\n");
+        assert!(editor.apply(Edit::HistoryPrev));
+        assert!(
+            !editor
+                .line()
+                .contains(|c: char| c.is_control() && c != '\t' && c != '\n')
+        );
+    }
+
+    #[test]
+    fn test_add_history_multi_line_entry_does_not_merge_tokens() {
+        // 1.0.0 stored "let x =\n42" as "let x =42" and "a\nb" as "ab".
+        let mut editor = Editor::new();
+        editor.add_history("a\nb");
+        assert!(editor.apply(Edit::HistoryPrev));
+        assert_eq!(editor.submit(), "a\nb");
+    }
+
+    #[test]
+    fn test_recalled_multi_line_entry_edits_by_line() {
+        let mut editor = Editor::new();
+        editor.add_history("ab\n\tcd");
+        assert!(editor.apply(Edit::HistoryPrev));
+        // The cursor's column counts from the start of its own line; the tab
+        // is one column.
+        assert_eq!(editor.column(), 3);
+        assert!(editor.apply(Edit::Home));
+        assert!(editor.apply(Edit::WordRight));
+        assert_eq!(editor.cursor(), 2);
+        assert_eq!(editor.column(), 2);
+        // The newline is its own unit: one step over it, one backspace for it.
+        assert!(editor.apply(Edit::Right));
+        assert_eq!((editor.cursor(), editor.column()), (3, 0));
+        assert!(editor.apply(Edit::Backspace));
+        assert_eq!(editor.line(), "ab\tcd");
+        assert_eq!(editor.column(), 2);
     }
 
     #[test]

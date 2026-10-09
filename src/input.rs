@@ -190,6 +190,12 @@ impl<'a> Input<'a> {
     /// reports the error at the `)`, and more lines will never fix that.
     /// Warnings, notes, and help messages are ignored.
     ///
+    /// The spans are **global** positions in the session's source map, as a
+    /// parser fed by [`cursor`](Input::cursor) produces them. For a parser
+    /// that runs on [`text`](Input::text) alone and reports positions from
+    /// `0` (a lang-forge language, for one), use
+    /// [`is_incomplete_relative`](Input::is_incomplete_relative) instead.
+    ///
     /// The rule matches how [`parser_lang`] reports a missing token at the end
     /// of input — an empty span just past the last token — and works with any
     /// parser that does the same. Errors a lexer reports where a construct
@@ -224,16 +230,81 @@ impl<'a> Input<'a> {
     #[must_use]
     pub fn is_incomplete(&self, errors: &[Diagnostic]) -> bool {
         // Fits: `base + text.len()` fits in `u32`, and this is no longer.
-        let end = self.base + self.text.trim_end().len() as u32;
-        let mut any = false;
-        for error in errors.iter().filter(|d| d.severity() == Severity::Error) {
-            if error.primary().span().start().to_u32() < end {
-                return false;
-            }
-            any = true;
-        }
-        any
+        errors_at_end(errors, self.base + self.meaningful_len())
     }
+
+    /// [`is_incomplete`](Input::is_incomplete) for a parser whose spans are
+    /// **relative to [`text`](Input::text)**: byte `0` is the entry's first
+    /// byte, whatever its [`base`](Input::base).
+    ///
+    /// Use it when the pipeline parses `input.text()` on its own, without
+    /// [`cursor`](Input::cursor) — a language forged with lang-forge, for
+    /// example, whose `Language::parse(input.text())` reports positions from
+    /// `0`. The rule is the same as `is_incomplete`'s: at least one
+    /// error-severity diagnostic, and every one starting at or after the last
+    /// non-whitespace byte of the text. Passing relative spans to
+    /// `is_incomplete` instead would judge every entry after the first
+    /// complete, because their end-of-input errors fall before the entry's
+    /// global end.
+    ///
+    /// Which method suits which parser:
+    ///
+    /// | The parser… | Spans | Method |
+    /// |---|---|---|
+    /// | lexes with [`Input::cursor`] (or adds [`Input::base`] itself) | global | [`is_incomplete`](Input::is_incomplete) |
+    /// | parses [`Input::text`] as a standalone string | relative | `is_incomplete_relative` |
+    ///
+    /// In the first entry the two agree, since `base` is `0`; from the second
+    /// on, only the matching one is right.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use diag_lang::{Diagnostic, Label, Severity};
+    /// use repl_lang::{Session, Span, Status};
+    ///
+    /// let error_at = |at: u32| {
+    ///     Diagnostic::new(Severity::Error, "expected expression", Label::new(Span::empty(at), "here"))
+    /// };
+    ///
+    /// let mut session = Session::new();
+    /// session.feed("let a = 1;", |_| Status::Complete(()))?; // occupies 0..11
+    /// session.feed("(2 *", |input| {
+    ///     assert_eq!(input.base().to_u32(), 11);
+    ///     // A parser of `input.text()` alone reports the end of `(2 *` at 4.
+    ///     assert!(input.is_incomplete_relative(&[error_at(4)]));
+    ///     assert!(!input.is_incomplete_relative(&[error_at(1)])); // mid-text
+    ///     // The same spans read as global would point into entry 1.
+    ///     assert!(!input.is_incomplete(&[error_at(4)]));
+    ///     Status::Complete(())
+    /// })?;
+    /// # Ok::<(), repl_lang::SessionError>(())
+    /// ```
+    #[must_use]
+    pub fn is_incomplete_relative(&self, errors: &[Diagnostic]) -> bool {
+        errors_at_end(errors, self.meaningful_len())
+    }
+
+    /// Length of the text without its trailing whitespace: where the last
+    /// thing the user typed ends.
+    #[inline]
+    fn meaningful_len(&self) -> u32 {
+        // Fits: the session admits text only if its length fits in `u32`.
+        self.text.trim_end().len() as u32
+    }
+}
+
+/// `true` if there is at least one error-severity diagnostic and every one
+/// starts at or after `end`.
+fn errors_at_end(errors: &[Diagnostic], end: u32) -> bool {
+    let mut any = false;
+    for error in errors.iter().filter(|d| d.severity() == Severity::Error) {
+        if error.primary().span().start().to_u32() < end {
+            return false;
+        }
+        any = true;
+    }
+    any
 }
 
 #[cfg(test)]
@@ -296,5 +367,40 @@ mod tests {
         let input = Input::new("a b c\n", 0, 1);
         let errors = [diag(Severity::Error, 5), diag(Severity::Error, 1)];
         assert!(!input.is_incomplete(&errors));
+    }
+
+    #[test]
+    fn test_is_incomplete_relative_ignores_base() {
+        // "1 +   \n" at base 100: the meaningful text ends at relative 3.
+        let input = Input::new("1 +   \n", 100, 2);
+        assert!(input.is_incomplete_relative(&[diag(Severity::Error, 3)]));
+        assert!(input.is_incomplete_relative(&[diag(Severity::Error, 7)]));
+        assert!(!input.is_incomplete_relative(&[diag(Severity::Error, 2)]));
+        // Global positions are past the text, so they read as "at the end";
+        // the global method is the one for them.
+        assert!(input.is_incomplete(&[diag(Severity::Error, 103)]));
+        assert!(!input.is_incomplete(&[diag(Severity::Error, 3)]));
+    }
+
+    #[test]
+    fn test_is_incomplete_relative_same_rules_as_global() {
+        let input = Input::new("a b c\n", 40, 3);
+        assert!(!input.is_incomplete_relative(&[]));
+        assert!(!input.is_incomplete_relative(&[diag(Severity::Warning, 5)]));
+        let errors = [diag(Severity::Error, 5), diag(Severity::Error, 1)];
+        assert!(!input.is_incomplete_relative(&errors));
+        assert!(input.is_incomplete_relative(&[diag(Severity::Note, 0), diag(Severity::Error, 5)]));
+    }
+
+    #[test]
+    fn test_both_methods_agree_at_base_zero() {
+        let input = Input::new("x *\n", 0, 1);
+        for at in 0..6 {
+            let errors = [diag(Severity::Error, at)];
+            assert_eq!(
+                input.is_incomplete(&errors),
+                input.is_incomplete_relative(&errors)
+            );
+        }
     }
 }

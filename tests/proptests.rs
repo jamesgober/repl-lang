@@ -21,12 +21,35 @@ use unicode_lang::{char_width, is_xid_continue, str_width};
 
 /// Characters chosen to stress the unit and word rules: ASCII word and
 /// separator characters, a precomposed accent, a combining accent, a joiner, a
-/// wide ideograph, an astral emoji, and control characters the editor refuses.
+/// wide ideograph, an astral emoji, and control characters: refused when typed
+/// or pasted, while a history entry keeps tabs and newlines (and turns `\r`
+/// into a newline).
 fn any_char() -> impl Strategy<Value = char> {
     prop::sample::select(vec![
         'a', 'b', 'Z', '_', '7', ' ', '.', '(', 'é', '\u{0301}', '\u{200D}', '世', '😀', '\t',
-        '\n', '\u{1b}',
+        '\n', '\r', '\u{1b}',
     ])
+}
+
+/// Columns a character takes in the model: a tab counts one, as the editor
+/// documents; everything else follows the Unicode tables.
+fn model_width(c: char) -> usize {
+    if c == '\t' { 1 } else { char_width(c) }
+}
+
+/// Whether `c` begins a display unit in the model: anything with width, and a
+/// newline.
+fn starts_unit(c: char) -> bool {
+    model_width(c) != 0 || c == '\n'
+}
+
+/// What a history entry keeps of `line`, written as plain string replacement.
+fn recallable(line: &str) -> String {
+    line.replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .chars()
+        .filter(|&c| !c.is_control() || c == '\n' || c == '\t')
+        .collect()
 }
 
 #[derive(Clone, Debug)]
@@ -112,7 +135,7 @@ impl Model {
             return i;
         }
         i += 1;
-        while i < self.chars.len() && char_width(self.chars[i]) == 0 {
+        while i < self.chars.len() && !starts_unit(self.chars[i]) {
             i += 1;
         }
         i
@@ -123,7 +146,7 @@ impl Model {
             return 0;
         }
         i -= 1;
-        while i > 0 && char_width(self.chars[i]) == 0 {
+        while i > 0 && !starts_unit(self.chars[i]) {
             i -= 1;
         }
         i
@@ -225,8 +248,16 @@ impl Model {
             Edit::KillWordLeft => self.kill(self.word_left(self.cursor), self.cursor),
             Edit::KillWordRight => self.kill(self.cursor, self.word_right(self.cursor)),
             Edit::Yank => {
+                // The kill buffer goes back verbatim, newlines and tabs from
+                // a recalled entry included.
+                if self.kill.is_empty() {
+                    return false;
+                }
                 let kill = self.kill.clone();
-                !kill.is_empty() && self.insert(&kill)
+                let n = kill.len();
+                self.chars.splice(self.cursor..self.cursor, kill);
+                self.cursor += n;
+                true
             }
             Edit::HistoryPrev => match self.browsing {
                 None if self.history.is_empty() => false,
@@ -286,16 +317,53 @@ fn assert_same(editor: &Editor, model: &Model, step: &Op) {
         "cursor after {step:?}"
     );
     assert!(editor.line().is_char_boundary(editor.cursor()));
+    let before = &editor.line()[..editor.cursor()];
+    let own_line = before.rsplit('\n').next().unwrap_or("");
     assert_eq!(
         editor.column(),
-        str_width(&editor.line()[..editor.cursor()])
+        own_line.chars().map(model_width).sum::<usize>(),
+        "column after {step:?}"
     );
+    if !before.contains(['\n', '\t']) {
+        assert_eq!(editor.column(), str_width(before));
+    }
     assert!(
         editor
             .history()
             .eq(model.history.iter().map(String::as_str)),
         "history after {step:?}"
     );
+}
+
+/// Runs `ops` on an editor and on the model, both with history `capacity`,
+/// and checks that they agree after every step.
+fn check_editor(capacity: usize, ops: &[Op]) -> Result<(), TestCaseError> {
+    let mut editor = Editor::with_history(capacity);
+    let mut model = Model::new(capacity);
+    for op in ops {
+        match op {
+            Op::Apply(edit) => {
+                prop_assert_eq!(
+                    editor.apply(*edit),
+                    model.apply(*edit),
+                    "result of {:?}",
+                    op
+                );
+            }
+            Op::Insert(text) => {
+                let chars: Vec<char> = text.chars().collect();
+                prop_assert_eq!(editor.insert(text), model.insert(&chars));
+            }
+            Op::Submit => prop_assert_eq!(editor.submit(), model.submit()),
+            Op::Clear => prop_assert_eq!(editor.clear(), model.clear()),
+            Op::AddHistory(line) => {
+                editor.add_history(line);
+                model.record(&recallable(line));
+            }
+        }
+        assert_same(&editor, &model, op);
+    }
+    Ok(())
 }
 
 proptest! {
@@ -307,27 +375,23 @@ proptest! {
         capacity in 0_usize..4,
         ops in prop::collection::vec(any_op(), 0..80),
     ) {
-        let mut editor = Editor::with_history(capacity);
-        let mut model = Model::new(capacity);
-        for op in &ops {
-            match op {
-                Op::Apply(edit) => {
-                    prop_assert_eq!(editor.apply(*edit), model.apply(*edit), "result of {:?}", op);
-                }
-                Op::Insert(text) => {
-                    let chars: Vec<char> = text.chars().collect();
-                    prop_assert_eq!(editor.insert(text), model.insert(&chars));
-                }
-                Op::Submit => prop_assert_eq!(editor.submit(), model.submit()),
-                Op::Clear => prop_assert_eq!(editor.clear(), model.clear()),
-                Op::AddHistory(line) => {
-                    editor.add_history(line);
-                    let typable: String = line.chars().filter(|c| !c.is_control()).collect();
-                    model.record(&typable);
-                }
-            }
-            assert_same(&editor, &model, op);
-        }
+        check_editor(capacity, &ops)?;
+    }
+
+    /// The same, starting from a recalled multi-line history entry, so the
+    /// line holds newlines and tabs for the operations that follow.
+    #[test]
+    fn prop_editor_matches_model_on_recalled_multi_line_entries(
+        entry in prop::collection::vec(
+            prop::sample::select(vec!['a', 'b', ' ', '(', 'é', '\u{0301}', '世', '\t', '\n', '\r']),
+            1..12,
+        ),
+        ops in prop::collection::vec(any_op(), 0..40),
+    ) {
+        let entry: String = entry.into_iter().collect();
+        let mut all = vec![Op::AddHistory(format!("x{entry}")), Op::Apply(Edit::HistoryPrev)];
+        all.extend(ops);
+        check_editor(3, &all)?;
     }
 
     /// Typing a string and deleting it unit by unit leaves an empty line, and
@@ -465,6 +529,57 @@ proptest! {
         session.feed(&body, |input| {
             assert_eq!(input.base().to_u32(), base);
             assert_eq!(input.is_incomplete(&diagnostics), expected, "{body:?} {errors:?}");
+            Status::Complete(())
+        }).unwrap();
+    }
+
+    /// A parser that reports spans relative to the entry text gets, through
+    /// `is_incomplete_relative` and in any entry, exactly the verdict of the
+    /// definition applied to the text alone.
+    #[test]
+    fn prop_is_incomplete_relative_matches_definition(
+        pad in "[a-z]{0,24}",
+        body in "[a-z (]{0,10}[ \t]{0,3}",
+        errors in prop::collection::vec((0_u32..16, 0_u32..4, 0_usize..4), 0..4),
+    ) {
+        let mut session = Session::new();
+        session.feed(&pad, |_| Status::Complete(())).unwrap();
+        let end = u32::try_from(body.trim_end().len()).unwrap();
+        let severities = [Severity::Error, Severity::Warning, Severity::Note, Severity::Help];
+        let diagnostics: Vec<Diagnostic> = errors
+            .iter()
+            .map(|&(s, w, sev)| Diagnostic::new(severities[sev], "m", Label::new(Span::new(s, s + w), "l")))
+            .collect();
+        let errs: Vec<u32> = errors.iter().filter(|e| e.2 == 0).map(|e| e.0).collect();
+        let expected = !errs.is_empty() && errs.iter().all(|&at| at >= end);
+
+        session.feed(&body, |input| {
+            assert_eq!(input.is_incomplete_relative(&diagnostics), expected, "{pad:?} {body:?} {errors:?}");
+            Status::Complete(())
+        }).unwrap();
+    }
+
+    /// The two methods are one rule in two coordinate spaces: shifting every
+    /// span by the entry's base turns one verdict into the other.
+    #[test]
+    fn prop_is_incomplete_global_equals_relative_shifted_by_base(
+        pad in "[a-z]{0,24}",
+        body in "[a-z (]{0,10}[ \t]{0,3}",
+        errors in prop::collection::vec((0_u32..16, 0_u32..4), 0..4),
+    ) {
+        let mut session = Session::new();
+        session.feed(&pad, |_| Status::Complete(())).unwrap();
+        session.feed(&body, |input| {
+            let base = input.base().to_u32();
+            let make = |shift: u32| -> Vec<Diagnostic> {
+                errors
+                    .iter()
+                    .map(|&(s, w)| {
+                        Diagnostic::new(Severity::Error, "m", Label::new(Span::new(s + shift, s + w + shift), "l"))
+                    })
+                    .collect()
+            };
+            assert_eq!(input.is_incomplete(&make(base)), input.is_incomplete_relative(&make(0)));
             Status::Complete(())
         }).unwrap();
     }

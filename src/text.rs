@@ -15,14 +15,20 @@
 use unicode_lang::{char_width, is_xid_continue};
 
 // The ASCII fast paths below skip the Unicode table lookups for the common
-// case. They agree with the tables exactly: printable ASCII is one column
-// wide, ASCII controls are zero, and ASCII `XID_Continue` is `[0-9A-Za-z_]`.
+// case. They agree with the tables except for the tab: printable ASCII is one
+// column wide, ASCII controls are zero, and ASCII `XID_Continue` is
+// `[0-9A-Za-z_]`.
+//
+// Tabs and newlines reach the line only from a recalled multi-line history
+// entry (typing and pasting refuse them). A tab counts as one column, so a
+// host that draws it as one cell keeps the cursor in place; a newline starts a
+// unit of its own and ends the line the cursor column is counted on.
 
-/// The display width of `c` in terminal columns.
+/// The display width of `c` in terminal columns. A tab counts one.
 #[inline]
 fn width(c: char) -> usize {
     if c.is_ascii() {
-        usize::from(!c.is_ascii_control())
+        usize::from(!c.is_ascii_control() || c == '\t')
     } else {
         char_width(c)
     }
@@ -32,17 +38,20 @@ fn width(c: char) -> usize {
 /// its characters, with a whole-string shortcut for pure ASCII.
 pub(crate) fn text_width(text: &str) -> usize {
     if text.is_ascii() {
-        text.bytes().filter(|b| !b.is_ascii_control()).count()
+        text.bytes()
+            .filter(|&b| !b.is_ascii_control() || b == b'\t')
+            .count()
     } else {
         text.chars().map(width).sum()
     }
 }
 
 /// Returns `true` if `c` starts a new display unit rather than attaching to the
-/// one before it.
+/// one before it. A newline has no width but is a unit of its own, so the
+/// cursor stops on both sides of it and one backspace removes only it.
 #[inline]
 fn starts_unit(c: char) -> bool {
-    width(c) != 0
+    width(c) != 0 || c == '\n'
 }
 
 /// Returns `true` if `c` belongs to a word for word motion and word kills:
@@ -193,13 +202,30 @@ mod tests {
 
     #[test]
     fn test_ascii_fast_paths_agree_with_unicode_tables() {
-        for c in (0_u8..=0x7f).map(char::from) {
+        for c in (0_u8..=0x7f).map(char::from).filter(|&c| c != '\t') {
             assert_eq!(width(c), char_width(c), "width of {c:?}");
             assert_eq!(is_word(c), is_xid_continue(c), "word class of {c:?}");
         }
         let all: alloc::string::String = (0_u8..=0x7f).map(char::from).collect();
-        assert_eq!(text_width(&all), str_width(&all));
+        // The tab is the one deliberate difference: one column, not zero.
+        assert_eq!(text_width(&all), str_width(&all) + 1);
         assert_eq!(text_width("a世e\u{0301}"), str_width("a世e\u{0301}"));
+        assert_eq!(text_width("a\tb"), 3);
+        assert_eq!(text_width("é\t"), 2);
+    }
+
+    #[test]
+    fn test_newline_and_tab_are_units_of_their_own() {
+        let line = "a\n\u{0301}\tb";
+        assert_eq!(next_unit(line, 0), 1); // `a`
+        assert_eq!(next_unit(line, 1), 4); // the newline, with the orphan mark after it
+        assert_eq!(next_unit(line, 4), 5); // the tab
+        assert_eq!(prev_unit(line, 5), 4);
+        assert_eq!(prev_unit(line, 4), 1);
+        assert_eq!(prev_unit(line, 1), 0);
+        assert_eq!(word_right("ab\ncd", 0), 2);
+        assert_eq!(word_right("ab\ncd", 2), 5);
+        assert_eq!(word_left("ab\ncd", 5), 3);
     }
 
     #[test]

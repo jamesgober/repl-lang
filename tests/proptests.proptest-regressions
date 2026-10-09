@@ -5,3 +5,5 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 15109d7be2ddedc898f8bdcd184e2211105625e7bb1a66ccca02d94bb7341ef2 # shrinks to capacity = 1, ops = [AddHistory("a\t"), Apply(HistoryPrev), Apply(KillToStart), Apply(Yank)]
+cc 9c3ecd96dc09c07ff111e64de8fd41880c6339480fe10c0f06ca2908d28fd5e1 # shrinks to capacity = 1, ops = [AddHistory("a\n"), Apply(HistoryPrev), Apply(Left)]
+cc 959a14f7665ae08bfb3f07710762a8ff2989d2295865407cc2cb55ce2db6d20d # shrinks to entry = ['\n'], ops = [Apply(Left)]

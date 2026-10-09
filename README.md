@@ -120,7 +120,7 @@ assert_eq!(session.entry(1).map(|e| e.name()), Some("<repl:1>"));
 
 ### Using parser errors to detect continuation
 
-`Input::is_incomplete` turns any parser that reports a missing token *at the end of input* into a continuation detector. Errors in the middle of the input mean the entry is wrong, not unfinished, so it completes and the errors are reported.
+`Input::is_incomplete` turns any parser that reports a missing token *at the end of input* into a continuation detector. Errors in the middle of the input mean the entry is wrong, not unfinished, so it completes and the errors are reported. Use it when the parser's positions are global (lexed with `Input::cursor`). A parser run on `Input::text` alone, such as a [lang-forge](https://crates.io/crates/lang-forge) language, reports positions from the start of the entry; use `Input::is_incomplete_relative` for it. The same rule applies to both; see [`docs/API.md`](./docs/API.md#deciding-completeness).
 
 ```rust
 use diag_lang::{Diagnostic, Label, Severity};
@@ -287,6 +287,7 @@ Criterion writes per-benchmark reports to `target/criterion/`. Numbers vary by C
 - **Errors never echo input.** `SessionError` reports sizes, not text, so a refused line cannot leak into a log through the error value.
 - **The terminal stays outside.** Raw mode, key decoding, and drawing differ on every platform; editing logic does not. Keeping them apart makes the editor identical everywhere and testable without a terminal.
 - **Display units, not code points.** The cursor moves over a visible character together with any combining marks attached to it, so it never separates a letter from its accent, and `column()` counts wide characters as two terminal columns.
+- **History keeps an entry's shape.** A saved multi-line entry comes back with its newlines and tabs; every other control character, escape included, is removed before it can reach the line.
 
 <hr>
 <br>
