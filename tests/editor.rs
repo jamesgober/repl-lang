@@ -156,3 +156,97 @@ fn test_long_line_editing_stays_consistent() {
     assert_eq!(editor.line(), format!(" {}", word.repeat(1_000)));
     assert_eq!(editor.cursor(), 0);
 }
+
+/// Bidirectional formatting characters can make a line display differently
+/// from what it holds, so typing, pasting and history all drop them.
+const BIDI: [char; 12] = [
+    '\u{061C}', '\u{200E}', '\u{200F}', '\u{202A}', '\u{202B}', '\u{202C}', '\u{202D}', '\u{202E}',
+    '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}',
+];
+
+#[test]
+fn test_bidi_controls_are_refused_when_typed() {
+    let mut editor = Editor::new();
+    for c in BIDI {
+        assert!(!editor.apply(Edit::Insert(c)), "{c:?} was accepted");
+    }
+    assert_eq!(editor.line(), "");
+}
+
+#[test]
+fn test_bidi_controls_are_dropped_from_pasted_text() {
+    let mut editor = Editor::new();
+    assert!(editor.insert("if x \u{202E}{ admin }\u{2066} else"));
+    assert_eq!(editor.line(), "if x { admin } else");
+    let mut all = String::from("a");
+    all.extend(BIDI);
+    all.push('b');
+    let mut editor = Editor::new();
+    assert!(editor.insert(&all));
+    assert_eq!(editor.line(), "ab");
+}
+
+#[test]
+fn test_bidi_controls_are_dropped_from_history() {
+    let mut editor = Editor::new();
+    editor.add_history("let s = \"\u{202E}txt.exe\";\n\u{2067}x\u{2069}");
+    assert_eq!(
+        editor.history().next_back(),
+        Some("let s = \"txt.exe\";\nx")
+    );
+    assert!(editor.apply(Edit::HistoryPrev));
+    assert!(!editor.line().contains(|c| BIDI.contains(&c)));
+}
+
+#[test]
+fn test_joiners_and_marks_are_kept() {
+    // Zero-width joiners and combining marks are part of ordinary text.
+    let mut editor = Editor::new();
+    assert!(editor.insert("e\u{0301} \u{1F468}\u{200D}\u{1F469}"));
+    assert_eq!(editor.line(), "e\u{0301} \u{1F468}\u{200D}\u{1F469}");
+}
+
+#[test]
+fn test_browsing_the_oldest_entry_survives_it_being_dropped() {
+    let mut editor = Editor::with_history(3);
+    for line in ["a", "b", "c"] {
+        editor.add_history(line);
+    }
+    for _ in 0..3 {
+        assert!(editor.apply(Edit::HistoryPrev));
+    }
+    assert_eq!(editor.line(), "a");
+
+    // Recording "d" drops "a", the entry being shown.
+    editor.add_history("d");
+    assert!(editor.history().eq(["b", "c", "d"]));
+    // Nothing is older than what is shown, and the line is left alone.
+    assert!(!editor.apply(Edit::HistoryPrev));
+    assert_eq!(editor.line(), "a");
+    // Newer entries come back in order, none skipped.
+    assert!(editor.apply(Edit::HistoryNext));
+    assert_eq!(editor.line(), "b");
+    assert!(editor.apply(Edit::HistoryNext));
+    assert_eq!(editor.line(), "c");
+    assert!(editor.apply(Edit::HistoryNext));
+    assert_eq!(editor.line(), "d");
+    assert!(editor.apply(Edit::HistoryNext));
+    assert_eq!(editor.line(), "");
+}
+
+#[test]
+fn test_browsing_survives_several_drops() {
+    let mut editor = Editor::with_history(2);
+    editor.add_history("a");
+    editor.add_history("b");
+    assert!(editor.apply(Edit::HistoryPrev));
+    assert!(editor.apply(Edit::HistoryPrev));
+    assert_eq!(editor.line(), "a");
+    editor.add_history("c"); // drops "a"
+    editor.add_history("d"); // drops "b"
+    assert!(editor.history().eq(["c", "d"]));
+    assert!(editor.apply(Edit::HistoryNext));
+    assert_eq!(editor.line(), "c");
+    assert!(editor.apply(Edit::HistoryNext));
+    assert_eq!(editor.line(), "d");
+}

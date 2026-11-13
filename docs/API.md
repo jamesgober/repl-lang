@@ -210,7 +210,10 @@ A **word** is a run of units whose base character is an identifier character
 terminal columns: wide characters such as CJK ideographs and most emoji count
 two, combining marks count none.
 
-Typing and pasting never put a control character into the line. A recalled
+Typing and pasting never put a control character or a bidirectional formatting
+character (U+061C, U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069) into the
+line. Those are invisible and reorder how the surrounding text is displayed, so
+a line holding them could show something other than what it contains. A recalled
 [history](#editoradd_history) entry can hold the two that make up a multi-line
 entry: a newline is a unit of its own (the cursor stops on both sides of it,
 one backspace removes it) and ends the line `column` counts on; a tab is a unit
@@ -1169,8 +1172,8 @@ descriptors and draws nothing, so it behaves identically on every platform.
 
 **Invariants.** The cursor is a byte offset on a `char` boundary, never inside
 a [display unit](#display-units-and-words). Typing and pasting never put a
-control character into the line: [`Edit::Insert`](#edit) and
-[`insert`](#editorinsert) refuse them all. The only control characters the line
+control character or bidirectional formatting character into the line:
+[`Edit::Insert`](#edit) and [`insert`](#editorinsert) refuse them all. The only control characters the line
 can hold are the newlines and tabs of a recalled multi-line entry, which
 [`add_history`](#editoradd_history) keeps; it removes every other one, `ESC`
 included.
@@ -1415,7 +1418,7 @@ was inserted.
 
 | Parameter | Meaning |
 |---|---|
-| `text` | Text to insert. Control characters (including `'\n'` and `'\t'`) are dropped; everything else is inserted in one pass and the cursor moves past it. |
+| `text` | Text to insert. Control characters (including `'\n'` and `'\t'`) and bidirectional formatting characters are dropped; everything else is inserted in one pass and the cursor moves past it. |
 
 A host receiving a multi-line paste should split it into lines and submit them
 one by one, or feed the whole paste to the [`Session`](#session) directly.
@@ -1514,7 +1517,7 @@ the line being edited. Use it to restore history saved by an earlier session.
 
 | Parameter | Meaning |
 |---|---|
-| `line` | The text to record. Control characters are removed first, except newlines and tabs, which a multi-line entry needs (`"\r\n"` and a lone `'\r'` become `'\n'`); the result is skipped if blank or equal to the newest entry; the oldest entry is dropped once the history is full. |
+| `line` | The text to record. Bidirectional formatting characters and control characters are removed first, except newlines and tabs, which a multi-line entry needs (`"\r\n"` and a lone `'\r'` become `'\n'`); the result is skipped if blank or equal to the newest entry; the oldest entry is dropped once the history is full. |
 
 ```rust
 use repl_lang::{Edit, Editor};
@@ -1604,7 +1607,7 @@ are a guide; none are built in.
 
 | Variant | Effect | Usual keys |
 |---|---|---|
-| `Insert(c)` | Inserts `c` at the cursor; refused for control characters. | printable keys |
+| `Insert(c)` | Inserts `c` at the cursor; refused for control and bidirectional formatting characters. | printable keys |
 | `Backspace` | Deletes the unit before the cursor. | `Backspace`, `C-h` |
 | `Delete` | Deletes the unit under the cursor. | `Delete`, `C-d` |
 | `Left` / `Right` | Moves one unit. | `←` `→`, `C-b` `C-f` |
@@ -1949,7 +1952,8 @@ or there was nothing to evaluate. A new pipeline verdict would need a new
   `Editor::DEFAULT_HISTORY` is 1000.
 - **Editing.** Display units (a visible character plus following zero-width
   characters; a newline is a unit of its own), words (`XID_Continue` runs),
-  control-character refusal when typing and pasting, history entries keeping
+  control-character refusal when typing and pasting (bidirectional formatting
+  characters too, since 1.1.1), history entries keeping
   only newlines and tabs among control characters (since 1.1.0; 1.0.0 removed
   them too, which merged the lines of a multi-line entry), the history
   recording rules (no blanks, no immediate repeats, oldest dropped at

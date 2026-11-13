@@ -288,6 +288,7 @@ Criterion writes per-benchmark reports to `target/criterion/`. Numbers vary by C
 - **The terminal stays outside.** Raw mode, key decoding, and drawing differ on every platform; editing logic does not. Keeping them apart makes the editor identical everywhere and testable without a terminal.
 - **Display units, not code points.** The cursor moves over a visible character together with any combining marks attached to it, so it never separates a letter from its accent, and `column()` counts wide characters as two terminal columns.
 - **History keeps an entry's shape.** A saved multi-line entry comes back with its newlines and tabs; every other control character, escape included, is removed before it can reach the line.
+- **No hidden reordering.** Bidirectional formatting characters (U+202E and its relatives) are invisible and change how the text around them is displayed, so a line could show something other than what it holds. Typing, pasting and history all drop them, like control characters.
 
 <hr>
 <br>
@@ -302,7 +303,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo bench --bench bench
 ```
 
-The property tests in [`tests/proptests.rs`](./tests/proptests.rs) hold both halves to reference models. Arbitrary sequences of edits, pastes, submits, and history operations — over text mixing ASCII, accents, combining marks, joiners, wide characters, emoji, and control characters — must leave the editor in exactly the state of a model that works on a `Vec<char>`. Arbitrary lines with arbitrary terminators and size limits must leave the session agreeing with a plain string accumulator on every pending buffer, entry number, base offset, span, and refusal. Every `rust` example in this README and in [`docs/API.md`](./docs/API.md) is compiled and run as a doctest, so the published examples cannot drift from the API.
+The property tests in [`tests/proptests.rs`](./tests/proptests.rs) hold both halves to reference models. Arbitrary sequences of edits, pastes, submits, and history operations — over text mixing ASCII, accents, combining marks, joiners, wide characters, emoji, control characters, and bidirectional formatting characters — must leave the editor in exactly the state of a model that works on a `Vec<char>`. Arbitrary lines with arbitrary terminators and size limits must leave the session agreeing with a plain string accumulator on every pending buffer, entry number, base offset, span, and refusal. Every `rust` example in this README and in [`docs/API.md`](./docs/API.md) is compiled and run as a doctest, so the published examples cannot drift from the API.
 
 <hr>
 <br>

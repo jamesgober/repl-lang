@@ -11,13 +11,20 @@
 
 ## [Unreleased]
 
-### Added
+---
 
-### Changed
+## [1.1.1] - 2026-11-12
 
 ### Fixed
 
-### Security
+- Bidirectional formatting characters (U+061C, U+200E, U+200F, U+202A to
+  U+202E, U+2066 to U+2069) got into the line through typing, pasting and
+  recalled history. They are invisible and reorder how the text around them is
+  displayed, so a line could show something other than what it holds. They are
+  now dropped, as control characters already were.
+- Browsing the history at its oldest entry while `add_history` dropped that
+  entry to make room left the browse one entry ahead, so `HistoryNext` skipped
+  an entry. It now moves to the oldest entry that is left.
 
 ---
 
@@ -172,7 +179,8 @@ Initial scaffold and repository bootstrap. No domain logic yet &mdash; this rele
 - `.github/workflows/ci.yml` CI matrix; `deny.toml`, `clippy.toml`, `rustfmt.toml`.
 - `dev/DIRECTIVES.md` and `dev/ROADMAP.md` (committed engineering standards + plan).
 
-[Unreleased]: https://github.com/jamesgober/repl-lang/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/jamesgober/repl-lang/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/jamesgober/repl-lang/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/jamesgober/repl-lang/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/jamesgober/repl-lang/compare/v0.2.0...v1.0.0
 [0.2.0]: https://github.com/jamesgober/repl-lang/compare/v0.1.0...v0.2.0

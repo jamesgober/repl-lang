@@ -98,6 +98,9 @@ impl Calc {
         }
     }
 
+    // A diagnostic is a large value, but it is built only on the error path of
+    // a demo evaluator, so boxing it would only add noise here.
+    #[allow(clippy::result_large_err)]
     fn eval(&self, expr: &Expr, input: Input<'_>) -> Result<i64, Diagnostic> {
         match expr {
             Expr::Num { value, .. } => Ok(*value),

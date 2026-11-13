@@ -21,14 +21,26 @@ use unicode_lang::{char_width, is_xid_continue, str_width};
 
 /// Characters chosen to stress the unit and word rules: ASCII word and
 /// separator characters, a precomposed accent, a combining accent, a joiner, a
-/// wide ideograph, an astral emoji, and control characters: refused when typed
-/// or pasted, while a history entry keeps tabs and newlines (and turns `\r`
-/// into a newline).
+/// wide ideograph, an astral emoji, control characters and bidirectional
+/// formatting characters: refused when typed or pasted, while a history entry
+/// keeps tabs and newlines (and turns `\r` into a newline).
 fn any_char() -> impl Strategy<Value = char> {
     prop::sample::select(vec![
         'a', 'b', 'Z', '_', '7', ' ', '.', '(', 'é', '\u{0301}', '\u{200D}', '世', '😀', '\t',
-        '\n', '\r', '\u{1b}',
+        '\n', '\r', '\u{1b}', '\u{202E}', '\u{2066}', '\u{200F}',
     ])
+}
+
+/// Whether the editor keeps `c` out of the line: control characters and the
+/// bidirectional formatting characters, listed out here independently of the
+/// crate.
+fn refused(c: char) -> bool {
+    c.is_control()
+        || [
+            '\u{061C}', '\u{200E}', '\u{200F}', '\u{202A}', '\u{202B}', '\u{202C}', '\u{202D}',
+            '\u{202E}', '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}',
+        ]
+        .contains(&c)
 }
 
 /// Columns a character takes in the model: a tab counts one, as the editor
@@ -48,7 +60,7 @@ fn recallable(line: &str) -> String {
     line.replace("\r\n", "\n")
         .replace('\r', "\n")
         .chars()
-        .filter(|&c| !c.is_control() || c == '\n' || c == '\t')
+        .filter(|&c| !refused(c) || c == '\n' || c == '\t')
         .collect()
 }
 
@@ -105,7 +117,9 @@ struct Model {
     kill: Vec<char>,
     history: VecDeque<String>,
     capacity: usize,
-    browsing: Option<usize>,
+    /// The history position being shown; `-1` once the shown entry was the
+    /// oldest and has been dropped.
+    browsing: Option<isize>,
     draft: Vec<char>,
 }
 
@@ -189,7 +203,7 @@ impl Model {
 
     fn insert(&mut self, text: &[char]) -> bool {
         let mut any = false;
-        for &c in text.iter().filter(|c| !c.is_control()) {
+        for &c in text.iter().filter(|&&c| !refused(c)) {
             self.chars.insert(self.cursor, c);
             self.cursor += 1;
             any = true;
@@ -206,7 +220,7 @@ impl Model {
         }
         if self.history.len() == self.capacity {
             self.history.pop_front();
-            self.browsing = self.browsing.map(|i| i.saturating_sub(1));
+            self.browsing = self.browsing.map(|i| (i - 1).max(-1));
         }
         self.history.push_back(line.to_owned());
     }
@@ -214,7 +228,7 @@ impl Model {
     fn load(&mut self, index: usize) {
         self.chars = self.history[index].chars().collect();
         self.cursor = self.chars.len();
-        self.browsing = Some(index);
+        self.browsing = Some(index as isize);
     }
 
     fn apply(&mut self, edit: Edit) -> bool {
@@ -266,16 +280,16 @@ impl Model {
                     self.load(self.history.len() - 1);
                     true
                 }
-                Some(0) => false,
+                Some(i) if i <= 0 => false,
                 Some(i) => {
-                    self.load(i - 1);
+                    self.load(i as usize - 1);
                     true
                 }
             },
             Edit::HistoryNext => match self.browsing {
                 None => false,
-                Some(i) if i + 1 < self.history.len() => {
-                    self.load(i + 1);
+                Some(i) if i + 1 < self.history.len() as isize => {
+                    self.load((i + 1) as usize);
                     true
                 }
                 Some(_) => {
@@ -400,7 +414,7 @@ proptest! {
     fn prop_backspace_undoes_typing(text in any_text()) {
         let mut editor = Editor::new();
         editor.insert(&text);
-        let typed: String = text.chars().filter(|c| !c.is_control()).collect();
+        let typed: String = text.chars().filter(|&c| !refused(c)).collect();
         prop_assert_eq!(editor.line(), typed.as_str());
         let mut units = 0;
         while editor.apply(Edit::Backspace) {
