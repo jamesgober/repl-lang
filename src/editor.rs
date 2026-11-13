@@ -62,6 +62,11 @@ pub struct Editor {
     capacity: usize,
     /// Index into `history` while browsing it with `HistoryPrev`/`HistoryNext`.
     browsing: Option<usize>,
+    /// The entry being shown was the oldest and has since been dropped to make
+    /// room, so `browsing` is `Some(0)` but the shown entry sits just before
+    /// index 0: `HistoryNext` goes to index 0 and `HistoryPrev` has nowhere
+    /// to go.
+    shown_dropped: bool,
     /// The line being typed when browsing started, restored when browsing ends.
     draft: String,
 }
@@ -126,6 +131,7 @@ impl Editor {
             history: VecDeque::new(),
             capacity,
             browsing: None,
+            shown_dropped: false,
             draft: String::new(),
         }
     }
@@ -211,7 +217,7 @@ impl Editor {
     ///
     /// A command that cannot do anything — moving left at the start of the
     /// line, deleting at the end, yanking an empty kill buffer, inserting a
-    /// control character — leaves the editor untouched and returns `false`, so
+    /// control or bidirectional formatting character — leaves the editor untouched and returns `false`, so
     /// the host can skip a redraw or ring the bell.
     ///
     /// The kill commands replace the kill buffer with the text they remove;
@@ -264,8 +270,9 @@ impl Editor {
     /// Inserts `text` at the cursor, as a paste would, and reports whether
     /// anything was inserted.
     ///
-    /// Control characters in `text` are dropped, exactly as
-    /// [`Edit::Insert`] refuses them one at a time; everything else is
+    /// Control characters and bidirectional formatting characters in `text`
+    /// are dropped, exactly as [`Edit::Insert`] refuses them one at a time;
+    /// everything else is
     /// inserted in a single pass. A host that receives a multi-line paste
     /// should split it into lines and submit them one by one.
     ///
@@ -288,7 +295,7 @@ impl Editor {
     /// ```
     pub fn insert(&mut self, text: &str) -> bool {
         let before = self.line.len();
-        for segment in text.split(char::is_control) {
+        for segment in text.split(is_refused) {
             self.line.insert_str(self.cursor, segment);
             self.cursor += segment.len();
         }
@@ -357,12 +364,8 @@ impl Editor {
         core::mem::swap(&mut self.line, &mut self.submitted);
         self.line.clear();
         self.cursor = 0;
-        record(
-            &mut self.history,
-            self.capacity,
-            &self.submitted,
-            &mut self.browsing,
-        );
+        // Browsing ended above, so recording cannot move a browse position.
+        let _dropped = record(&mut self.history, self.capacity, &self.submitted);
         &self.submitted
     }
 
@@ -374,13 +377,19 @@ impl Editor {
     /// the newest entry are skipped, and the oldest entry is dropped once the
     /// history is full.
     ///
-    /// Control characters are removed first, except the two a multi-line entry
+    /// Bidirectional formatting characters are removed, and so are control
+    /// characters, except the two a multi-line entry
     /// is made of: newlines and tabs are kept, so an entry such as
     /// `"let x =\n\t42"` comes back as it was entered instead of with its lines
     /// run together. A `"\r\n"` or a lone `'\r'` is kept as one `'\n'`.
     /// Everything else — escape (`ESC`), the other C0 and C1 controls, and
     /// `DEL` — is removed, so a recalled entry can never put a terminal
     /// control sequence into the line.
+    ///
+    /// Recording while the history is being browsed keeps the browse on the
+    /// entry it shows. If that entry is the oldest and is dropped to make
+    /// room, `HistoryPrev` has nothing older to go to and `HistoryNext` moves
+    /// to the oldest entry that is left.
     ///
     /// # Examples
     ///
@@ -400,11 +409,11 @@ impl Editor {
     /// assert_eq!(editor.history().next_back(), Some("fn f() {\n\treturn 1\n}[0m"));
     /// ```
     pub fn add_history(&mut self, line: &str) {
-        if line.contains(|c: char| c.is_control() && c != '\n' && c != '\t') {
+        if line.contains(|c: char| is_refused(c) && c != '\n' && c != '\t') {
             let clean = recallable(line);
-            record(&mut self.history, self.capacity, &clean, &mut self.browsing);
+            self.record(&clean);
         } else {
-            record(&mut self.history, self.capacity, line, &mut self.browsing);
+            self.record(line);
         }
     }
 
@@ -440,7 +449,7 @@ impl Editor {
     }
 
     fn insert_char(&mut self, c: char) -> bool {
-        if c.is_control() {
+        if is_refused(c) {
             return false;
         }
         self.line.insert(self.cursor, c);
@@ -509,6 +518,10 @@ impl Editor {
     fn history_next(&mut self) -> bool {
         match self.browsing {
             None => false,
+            Some(_) if self.shown_dropped => {
+                self.load(0);
+                true
+            }
             Some(index) if index + 1 < self.history.len() => {
                 self.load(index + 1);
                 true
@@ -528,11 +541,28 @@ impl Editor {
         }
         self.cursor = self.line.len();
         self.browsing = Some(index);
+        self.shown_dropped = false;
+    }
+
+    /// Records `line` in the history, keeping an in-progress browse on the
+    /// entry it shows.
+    fn record(&mut self, line: &str) {
+        if record(&mut self.history, self.capacity, line) {
+            // The oldest entry was dropped, so every index shifts down by one.
+            // If the dropped entry is the one being shown, the browse now sits
+            // just before index 0.
+            match self.browsing {
+                Some(0) => self.shown_dropped = true,
+                Some(index) => self.browsing = Some(index - 1),
+                None => {}
+            }
+        }
     }
 
     /// Ends history browsing by bringing back the line that was being typed
     /// when it started.
     fn restore_draft(&mut self) {
+        self.shown_dropped = false;
         if self.browsing.take().is_some() {
             core::mem::swap(&mut self.line, &mut self.draft);
             self.draft.clear();
@@ -544,12 +574,14 @@ impl Editor {
     /// edited or not, is what the user chose to keep.
     fn forget_draft(&mut self) {
         self.browsing = None;
+        self.shown_dropped = false;
         self.draft.clear();
     }
 }
 
 /// `line` as a history entry may hold it: newlines and tabs kept, `"\r\n"` and
-/// a lone `'\r'` turned into `'\n'`, and every other control character removed.
+/// a lone `'\r'` turned into `'\n'`, and every other control character and
+/// every bidirectional formatting character removed.
 fn recallable(line: &str) -> String {
     let mut clean = String::with_capacity(line.len());
     let mut chars = line.chars().peekable();
@@ -558,7 +590,7 @@ fn recallable(line: &str) -> String {
             '\r' if chars.peek() == Some(&'\n') => {}
             '\r' | '\n' => clean.push('\n'),
             '\t' => clean.push('\t'),
-            c if c.is_control() => {}
+            c if is_refused(c) => {}
             c => clean.push(c),
         }
     }
@@ -566,22 +598,17 @@ fn recallable(line: &str) -> String {
 }
 
 /// Appends `line` to `history` under the editor's recording rules, recycling
-/// the oldest entry's buffer once `capacity` is reached.
-fn record(
-    history: &mut VecDeque<String>,
-    capacity: usize,
-    line: &str,
-    browsing: &mut Option<usize>,
-) {
+/// the oldest entry's buffer once `capacity` is reached. Returns `true` if the
+/// oldest entry was dropped to make room.
+fn record(history: &mut VecDeque<String>, capacity: usize, line: &str) -> bool {
     if capacity == 0
         || line.trim().is_empty()
         || history.back().is_some_and(|newest| newest == line)
     {
-        return;
+        return false;
     }
-    let mut slot = if history.len() >= capacity {
-        // Keep an in-progress browse pointing at the same entry after the shift.
-        *browsing = browsing.map(|index| index.saturating_sub(1));
+    let dropped = history.len() >= capacity;
+    let mut slot = if dropped {
         history.pop_front().unwrap_or_default()
     } else {
         String::new()
@@ -589,6 +616,20 @@ fn record(
     slot.clear();
     slot.push_str(line);
     history.push_back(slot);
+    dropped
+}
+
+/// Characters that never enter the line by typing or pasting, and that a
+/// history entry drops (apart from the newlines and tabs it keeps): every
+/// control character, and the bidirectional formatting characters. The
+/// latter are invisible and reorder how the text around them is displayed,
+/// so a line holding them can show something other than what it contains.
+fn is_refused(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+        )
 }
 
 #[cfg(test)]

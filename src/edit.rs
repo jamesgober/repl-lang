@@ -44,7 +44,10 @@ pub enum Edit {
     ///
     /// Control characters (`'\n'`, `'\t'`, escape, and the rest of the C0/C1
     /// ranges) are refused: they have no printable form on a single line, and
-    /// a terminal key handler should turn them into commands instead.
+    /// a terminal key handler should turn them into commands instead. So are
+    /// the bidirectional formatting characters (U+061C, U+200E, U+200F,
+    /// U+202A to U+202E, U+2066 to U+2069), which are invisible and change how
+    /// the text around them is displayed.
     Insert(char),
     /// Deletes the display unit before the cursor. `Backspace`, `Ctrl-H`.
     Backspace,
