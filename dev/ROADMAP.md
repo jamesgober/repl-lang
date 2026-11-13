@@ -68,7 +68,7 @@ in `docs/API.md#stability`. Tests and benchmarks green on Windows and Linux
 
 ## v1.1.0 - Relative completeness check + history fixes (DONE)
 Fixes ISSUES M72 and the patch-level part of M73 in
-`lang-collection/_lexersketch/ISSUES.md`. Additive API only.
+the issue ledger. Additive API only.
 - [x] `Input::is_incomplete_relative` for parsers that report text-relative
       spans; `is_incomplete` unchanged.
 - [x] History keeps newlines and tabs; the editor handles them in a recalled
